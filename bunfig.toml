@@ -1,0 +1,6 @@
+[install]
+cache = false
+production = true
+
+[test]
+timeout = "30s"
