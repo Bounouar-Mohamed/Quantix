@@ -6,7 +6,7 @@
 import WebSocket from 'ws';
 import { Server } from 'http';
 import OpenAI, { toFile } from 'openai';
-import { profileJohn } from '../ai/modelProfile';
+import { defaultProfile } from '../../../ai/modelProfile';
 import { buildRealtimeSessionUpdate } from '../ai/transports/openaiRealtime';
 import { executeTool } from '../ai/toolRegistry';
 import { ChatService } from '../ai/services/chatService';
@@ -144,7 +144,7 @@ export class RealtimeWebSocketServer {
 
             console.log(`✅ Connexion Realtime: userId=${userId}, threadId=${threadId}, conversationId=${conversationId}, tenantId=${tenantId}`);
 
-            // Ouvrir WebSocket vers OpenAI
+            // Ouvrir WebSocket vers OpenAI - le modèle détecte automatiquement la langue
             const openaiWs = await this.openOpenAIConnection(threadId);
 
             // Stocker la connexion
@@ -175,6 +175,7 @@ export class RealtimeWebSocketServer {
 
     /**
      * Ouvrir WebSocket vers OpenAI
+     * @param threadId - ID du thread
      */
     private async openOpenAIConnection(threadId: string): Promise<WebSocket> {
         const model = process.env.OPENAI_MODEL_REALTIME || 'gpt-realtime-mini';
@@ -191,12 +192,15 @@ export class RealtimeWebSocketServer {
             ws.on('open', () => {
                 console.log(`✅ Connexion OpenAI ouverte pour thread: ${threadId}`);
 
-                // Configuration de la session Realtime depuis le profil
-                const sessionConfig = buildRealtimeSessionUpdate(profileJohn);
+                // ═══════════════════════════════════════════════════════════════════════════
+                // REALTIME: Configuration multilingue - le modèle détecte automatiquement la langue
+                // ═══════════════════════════════════════════════════════════════════════════
+                const sessionConfig = buildRealtimeSessionUpdate(defaultProfile);
 
-                // Log la configuration envoyée
-                console.log('📤 Configuration session envoyée à OpenAI:');
-                console.log(JSON.stringify(sessionConfig, null, 2));
+                // Log la configuration envoyée (premiers 200 chars des instructions pour debug)
+                console.log(`📤 Configuration session multilingue envoyée à OpenAI:`);
+                console.log(`   Instructions length: ${sessionConfig.session.instructions.length} chars`);
+                console.log(`   Instructions preview: ${sessionConfig.session.instructions.substring(0, 200)}...`);
 
                 ws.send(JSON.stringify(sessionConfig));
 
@@ -737,6 +741,11 @@ export class RealtimeWebSocketServer {
                             sttState.accumulatedTranscript = '';
                         }
                         sttState.accumulatedTranscript += delta;
+                        
+                        // ═══════════════════════════════════════════════════════════════════════════
+                        // NOTE: Le modèle OpenAI Realtime détecte automatiquement la langue
+                        // Pas besoin de mettre à jour la session - le modèle gère cela nativement
+                        // ═══════════════════════════════════════════════════════════════════════════
 
                         // REST fallback anticipé (seulement si Realtime désactivé)
                         if (!sttState.responseGenerationStarted && sttState.accumulatedTranscript.length > 5 && !realtimeGenEnabled) {
@@ -804,6 +813,11 @@ export class RealtimeWebSocketServer {
                         const text = message.transcript || message.text || '';
                         if (text) {
                             console.log(`📤 Transcription Realtime reçue: "${text.substring(0, 50)}..."`);
+                            
+                            // ═══════════════════════════════════════════════════════════════════════════
+                            // NOTE: Le modèle OpenAI Realtime détecte automatiquement la langue
+                            // Pas besoin de mettre à jour la session - le modèle gère cela nativement
+                            // ═══════════════════════════════════════════════════════════════════════════
                             
                             // Récupérer le timestamp de début de cette transcription
                             const itemId = message.item_id || '';

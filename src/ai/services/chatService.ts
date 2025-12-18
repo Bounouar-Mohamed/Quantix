@@ -4,7 +4,7 @@
  */
 
 import OpenAI from 'openai';
-import { profileJohn } from '../modelProfile';
+import { defaultProfile } from '../modelProfile';
 import { runChatOnce } from '../transports/openaiChat';
 
 /**
@@ -12,7 +12,7 @@ import { runChatOnce } from '../transports/openaiChat';
  */
 export class ChatService {
     private client: OpenAI;
-    private profile = profileJohn;
+    private profile = defaultProfile;
 
     constructor(client: OpenAI) {
         this.client = client;

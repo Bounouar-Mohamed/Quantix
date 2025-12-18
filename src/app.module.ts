@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 // Modules métier
 import { AiModule } from './ai/ai.module';
@@ -14,6 +15,7 @@ import { RealtimeModule } from './chatbot/realtime/realtime.module';
 // Configuration
 import { aiConfig } from './common/config/ai.config';
 import { databaseConfig } from './common/config/database.config';
+import { InternalApiGuard } from './common/guards/internal-api.guard';
 
 @Module({
   imports: [
@@ -38,6 +40,16 @@ import { databaseConfig } from './common/config/database.config';
     DatabaseModule,
     MonitoringModule,
     RealtimeModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: InternalApiGuard,
+    },
   ],
 })
 export class AppModule {}

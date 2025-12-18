@@ -14,9 +14,10 @@ import {
     Ip,
     Headers
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { RealtimeService } from './realtime.service';
-import { CreateEphemeralTokenDto, EphemeralTokenResponseDto } from './dto/realtime.dto';
+import { CreateEphemeralTokenDto, EphemeralTokenResponseDto, ExecuteToolDto } from './dto/realtime.dto';
 import type { Request } from 'express';
 
 @ApiTags('chatbot-realtime')
@@ -29,6 +30,7 @@ export class RealtimeController {
      * Endpoint: POST /api/v1/chatbot/realtime/ephemeral-token
      */
     @Post('ephemeral-token')
+    @Throttle(3, 60)
     @HttpCode(HttpStatus.OK)
     @ApiOperation({
         summary: 'Créer un token éphémère pour session Realtime',
@@ -95,9 +97,13 @@ export class RealtimeController {
     @ApiResponse({ status: 200, description: 'Configuration' })
     async getConfig(
         @Headers('user-id') userId?: string,
-        @Headers('tenant-id') tenantId?: string
+        @Headers('tenant-id') tenantId?: string,
+        @Headers('accept-language') acceptLanguage?: string,
+        @Headers('locale') locale?: string
     ) {
-        return await this.realtimeService.getConfig(userId, tenantId);
+        // Utiliser locale ou accept-language pour détecter la langue
+        const detectedLocale = locale || acceptLanguage || 'en';
+        return await this.realtimeService.getConfig(userId, tenantId, detectedLocale);
     }
 
     /**
@@ -105,13 +111,14 @@ export class RealtimeController {
      * Endpoint: POST /api/v1/chatbot/tools/execute
      */
     @Post('tools/execute')
+    @Throttle(15, 60)
     @HttpCode(HttpStatus.OK)
     @ApiOperation({
         summary: 'Exécuter un tool appelé par le modèle',
         description: 'Bridge entre le modèle et le serveur métier (CRM-API)'
     })
     @ApiResponse({ status: 200, description: 'Tool exécuté' })
-    async executeTool(@Body() dto: any) {
+    async executeTool(@Body() dto: ExecuteToolDto) {
         return await this.realtimeService.executeTool(dto);
     }
 

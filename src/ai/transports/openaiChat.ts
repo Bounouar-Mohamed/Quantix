@@ -28,6 +28,8 @@ export async function runChatOnce(
     const completion = await client.chat.completions.create({
         model: process.env.OPENAI_MODEL_TEXT || "gpt-4o-mini",
         temperature: profile.temperature,
+        frequency_penalty: profile.frequencyPenalty ?? 0,
+        presence_penalty: profile.presencePenalty ?? 0,
         messages: finalMessages,
         tools: profile.tools.map(t => ({
             type: "function" as const,

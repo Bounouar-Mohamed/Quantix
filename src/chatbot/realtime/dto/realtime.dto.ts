@@ -3,7 +3,9 @@
  */
 
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsNumber } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Matches, IsIn, IsObject } from 'class-validator';
+
+const IDENTIFIER_REGEX = /^[A-Za-z0-9:_-]{1,64}$/;
 
 export class CreateEphemeralTokenDto {
     @ApiProperty({
@@ -11,6 +13,7 @@ export class CreateEphemeralTokenDto {
         example: 'user-123'
     })
     @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'userId invalide' })
     userId: string;
 
     @ApiProperty({
@@ -18,6 +21,7 @@ export class CreateEphemeralTokenDto {
         example: 'tenant-456'
     })
     @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'tenantId invalide' })
     tenantId: string;
 
     @ApiProperty({
@@ -27,6 +31,7 @@ export class CreateEphemeralTokenDto {
     })
     @IsOptional()
     @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'conversationId invalide', groups: ['conversation'] })
     conversationId?: string;
 
     @ApiProperty({
@@ -67,19 +72,41 @@ export class EphemeralTokenResponseDto {
 }
 
 export class ExecuteToolDto {
-    @ApiProperty()
+    private static readonly allowedTools = [
+        // Legacy tools
+        'create_automation', 'analyze_client', 'log_to_crm',
+        // Reccos tools
+        'list_available_properties', 'get_property_details', 'calculate_investment', 'get_market_stats',
+        // Web tools
+        'web_search', 'web_open'
+    ];
+
+    @ApiProperty({
+        description: 'Nom du tool à exécuter',
+        enum: ExecuteToolDto.allowedTools
+    })
+    @IsIn(ExecuteToolDto.allowedTools)
     name: string;
 
-    @ApiProperty()
-    arguments: any;
+    @ApiProperty({
+        description: 'Arguments JSON pour le tool'
+    })
+    @IsObject()
+    arguments: Record<string, any>;
 
     @ApiProperty()
+    @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'sessionId invalide' })
     sessionId: string;
 
     @ApiProperty()
+    @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'userId invalide' })
     userId: string;
 
     @ApiProperty()
+    @IsString()
+    @Matches(IDENTIFIER_REGEX, { message: 'correlationId invalide' })
     correlationId: string;
 }
 

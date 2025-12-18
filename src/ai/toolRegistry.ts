@@ -318,14 +318,6 @@ export const toolHandlers: Record<string, ToolHandler> = {
         logger.log(`🏠 [get_property_details] user=${ctx.userId} propertyId=${propertyId}`);
         
         try {
-            if (!propertyId || typeof propertyId !== 'string' || propertyId.trim().length === 0) {
-                logger.warn(`⚠️ [get_property_details] propertyId manquant`);
-                return {
-                    error: 'property_id_missing',
-                    message: 'Aucun ID de propriété fourni. Réutilise l’ID que tu viens de partager à l’utilisateur ou redemande-lui la propriété qui l’intéresse.',
-                };
-            }
-
             const property = await reccosApiClient.getPropertyById(propertyId);
             
             if (!property) {

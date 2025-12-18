@@ -1,11 +1,14 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { configureSafeConsole } from './common/utils/console-sanitizer';
 
 async function bootstrap() {
+  configureSafeConsole();
+  const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
 
@@ -44,8 +47,8 @@ async function bootstrap() {
   const port = configService.get('PORT', 3001);
   await app.listen(port);
 
-  console.log(`🚀 AI Management Service démarré sur le port ${port}`);
-  console.log(`📚 Documentation disponible sur http://localhost:${port}/api/docs`);
+  logger.log(`AI Management Service démarré sur le port ${port}`);
+  logger.log(`Documentation disponible sur http://localhost:${port}/api/docs`);
 }
 
 bootstrap();

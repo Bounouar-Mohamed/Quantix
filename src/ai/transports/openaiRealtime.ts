@@ -3,13 +3,15 @@
  * Transforme le profil de modèle en configuration de session WebSocket
  */
 
-import { ModelProfile } from "../modelProfile";
+import { ModelProfile, getRealtimeInstructionsForLang } from "../modelProfile";
 
 export interface RealtimeSessionConfig {
     type: "session.update";
     session: {
         model: string;
         temperature: number;
+        frequency_penalty?: number;
+        presence_penalty?: number;
         voice?: string;
         modalities: string[];
         instructions: string;
@@ -38,16 +40,28 @@ export interface RealtimeSessionConfig {
 
 /**
  * Construire la configuration de session Realtime à partir d'un profil de modèle
+ * ⚠️ IMPORTANT: Ne JAMAIS utiliser profile.instructions (trop long, en FR)
+ * On utilise uniquement les instructions realtime multilingues
+ * Le modèle OpenAI Realtime détecte automatiquement la langue de l'utilisateur
  */
-export function buildRealtimeSessionUpdate(profile: ModelProfile): RealtimeSessionConfig {
+export function buildRealtimeSessionUpdate(
+    profile: ModelProfile
+): RealtimeSessionConfig {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REALTIME: Instructions multilingues - détection automatique par le modèle
+    // ═══════════════════════════════════════════════════════════════════════════
+    const realtimeInstructions = getRealtimeInstructionsForLang();
+    
     return {
         type: "session.update",
         session: {
             model: profile.id,
             temperature: profile.temperature,
+            frequency_penalty: profile.frequencyPenalty,
+            presence_penalty: profile.presencePenalty,
             voice: profile.voice,
             modalities: profile.modalities,
-            instructions: profile.instructions,
+            instructions: realtimeInstructions, // ✅ Instructions realtime dynamiques
             tools: profile.tools.map(t => ({
                 type: "function",
                 name: t.name,
@@ -56,18 +70,19 @@ export function buildRealtimeSessionUpdate(profile: ModelProfile): RealtimeSessi
             })),
             turn_detection: {
                 type: "server_vad",
-                threshold: 0.5,  // Seuil plus bas pour réactivité
+                threshold: 0.5,
                 prefix_padding_ms: 250,
-                silence_duration_ms: 500,  // Silence plus court
-                create_response: false,  // ❌ NE PAS créer de réponse tout seul
+                silence_duration_ms: 500,
+                create_response: false,
                 interrupt_response: true
             },
             input_audio_transcription: {
-                enabled: true, // ✅ Activer explicitement la STT utilisateur
+                enabled: true,
+                // ⚠️ IMPORTANT: Ne pas forcer la langue, laisser l'auto-détection
                 model: process.env.STT_REALTIME_MODEL || "gpt-4o-mini-transcribe"
             },
             input_audio_format: "pcm16",
-            output_audio_format: "pcm16" // ✅ String, pas objet
+            output_audio_format: "pcm16"
         }
     };
 }

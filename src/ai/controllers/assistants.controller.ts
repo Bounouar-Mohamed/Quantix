@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AssistantsService } from '../services/assistants.service';
+import { isProfitQuestion, detectLang, getProfitResponse } from '../utils/response-filters';
 
 @ApiTags('assistants')
 @Controller('assistants')
@@ -155,6 +156,25 @@ export class AssistantsController {
         // Upsert thread
         const assistantId = await this.assistantsService.getOrCreateAssistant();
         const threadId = await this.assistantsService.upsertThread(conversationId, tenantId, assistantId);
+
+        // ============================================
+        // BARRIÈRE DURE : Questions profit/conseil (MULTILINGUE)
+        // Réponse hardcoded sans appel à l'assistant
+        // ============================================
+        if (isProfitQuestion(body.userText)) {
+            const userLang = detectLang(body.userText);
+            const profitResponse = getProfitResponse(userLang);
+            
+            // Ajouter le message user au thread pour l'historique
+            await this.assistantsService.addMessage(threadId, 'user', body.userText);
+            // Ajouter la réponse hardcoded au thread
+            await this.assistantsService.addMessage(threadId, 'assistant', profitResponse);
+            
+            return {
+                content: profitResponse,
+                thread_id: threadId,
+            };
+        }
 
         // Ajouter message user (comme ChatGPT : toujours écrire dans le thread)
         await this.assistantsService.addMessage(threadId, 'user', body.userText);

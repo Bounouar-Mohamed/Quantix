@@ -11,9 +11,17 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { prisma } from '../../db/prisma';
 import { executeTool } from '../toolRegistry';
-import { profileJohn } from '../modelProfile';
+import { defaultProfile, getRealtimeInstructionsForLang } from '../modelProfile';
 import { AssistantAdapter } from '../interfaces/assistant-adapter.interface';
 import { LegacyAssistantAdapter } from '../adapters/legacy-assistant.adapter';
+import { 
+  isProfitQuestion,
+  detectLang,
+  getProfitResponse,
+  cleanResponse,
+  shouldShowProperties,
+  stripGenericFirstQuestion,
+} from '../utils/response-filters';
 
 @Injectable()
 export class AssistantsService {
@@ -280,7 +288,44 @@ export class AssistantsService {
 
         const content = lastMessage.content[0];
         if (content.type === 'text') {
-            const answerText = content.text.value;
+            let answerText = content.text.value;
+            
+            // ============================================
+            // FILTRES DE RÉPONSE
+            // ============================================
+            try {
+                const allMessages = await this.openai.beta.threads.messages.list(threadId, {
+                    order: 'desc',
+                    limit: 10,
+                });
+                
+                const lastUserMessage = allMessages.data.find(m => m.role === 'user');
+                if (lastUserMessage) {
+                    const userContent = lastUserMessage.content[0];
+                    if (userContent.type === 'text') {
+                        const userText = userContent.text.value;
+                        
+                        // 1. Filtre anti-duplication (blocs UI)
+                        const originalLength = answerText.length;
+                        answerText = cleanResponse(answerText, userText);
+                        
+                        if (answerText.length !== originalLength) {
+                            this.logger.log(`🧹 [FILTER] Blocs UI supprimés (${originalLength - answerText.length} chars)`);
+                        }
+                    }
+                }
+                
+                // 2. Filtre anti-questions génériques
+                const beforeStrip = answerText.length;
+                answerText = stripGenericFirstQuestion(answerText);
+                if (answerText.length !== beforeStrip) {
+                    this.logger.log(`🧹 [FILTER] Question générique supprimée`);
+                }
+                
+            } catch (filterError: any) {
+                this.logger.warn(`⚠️ [FILTER] Erreur lors du filtrage: ${filterError.message}`);
+            }
+            
             const preview = answerText.length > 100 ? answerText.substring(0, 100) + '...' : answerText;
             this.logger.log(`✅ [RUN] Réponse récupérée (${answerText.length} chars): "${preview}"`);
             return answerText;
@@ -322,17 +367,37 @@ export class AssistantsService {
     }
 
     /**
-     * Récupérer les instructions et tools d'un assistant (pour Realtime)
+     * Récupérer les instructions et tools d'un assistant
+     * @param assistantId - ID de l'assistant (optionnel)
+     * @param opts.mode - 'chat' pour instructions longues FR, 'realtime' pour instructions courtes multilingues
      */
-    async getAssistantConfig(assistantId?: string): Promise<{ instructions: string; tools?: any[] }> {
+    async getAssistantConfig(
+        assistantId?: string, 
+        opts?: { mode?: 'chat' | 'realtime' }
+    ): Promise<{ instructions: string; tools?: any[] }> {
         const id = assistantId || process.env.OPENAI_ASSISTANT_ID;
+        const mode = opts?.mode ?? 'chat';
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // INSTRUCTIONS SELON LE MODE
+        // - chat: instructions longues (defaultProfile.instructions) - peut être FR
+        // - realtime: instructions courtes multilingues (getRealtimeInstructionsForLang())
+        // ═══════════════════════════════════════════════════════════════════════════
+        const getInstructions = () => {
+            if (mode === 'realtime') {
+                const realtimeInstructions = getRealtimeInstructionsForLang();
+                this.logger.log(`🌍 [ASSISTANT] Mode REALTIME: instructions multilingues (${realtimeInstructions.length} chars)`);
+                return realtimeInstructions;
+            }
+            return defaultProfile.instructions;
+        };
         
         if (!id) {
-            // Fallback sur profileJohn si pas d'assistant configuré
-            this.logger.log(`⚠️ [ASSISTANT] Pas d'assistant configuré, utilisation profileJohn`);
+            // Fallback sur defaultProfile si pas d'assistant configuré
+            this.logger.log(`⚠️ [ASSISTANT] Pas d'assistant configuré, utilisation defaultProfile (mode: ${mode})`);
             return {
-                instructions: profileJohn.instructions,
-                tools: profileJohn.tools.map(t => ({
+                instructions: getInstructions(),
+                tools: defaultProfile.tools.map(t => ({
                     type: 'function' as const,
                     function: {
                         name: t.name,
@@ -344,25 +409,31 @@ export class AssistantsService {
         }
 
         try {
-            this.logger.log(`📥 [ASSISTANT] Récupération config assistant: ${id}`);
+            this.logger.log(`📥 [ASSISTANT] Récupération config assistant: ${id} (mode: ${mode})`);
             const assistant = await this.openai.beta.assistants.retrieve(id);
             
             this.logger.log(`✅ [ASSISTANT] Assistant récupéré: ${assistant.name || 'sans nom'} (${id})`);
-            this.logger.log(`📝 [ASSISTANT] Instructions: ${assistant.instructions?.substring(0, 100)}...`);
             this.logger.log(`🔧 [ASSISTANT] Tools: ${assistant.tools?.length || 0} tools configurés`);
             
+            // En mode realtime, TOUJOURS utiliser les instructions realtime (pas celles de l'assistant)
+            const instructions = mode === 'realtime' 
+                ? getRealtimeInstructionsForLang() 
+                : (assistant.instructions || defaultProfile.instructions);
+            
+            this.logger.log(`📝 [ASSISTANT] Instructions (${mode}): ${instructions.substring(0, 100)}...`);
+            
             return {
-                instructions: assistant.instructions || profileJohn.instructions,
+                instructions,
                 tools: assistant.tools || [],
             };
         } catch (error: any) {
             this.logger.error(`❌ [ASSISTANT] Erreur récupération assistant ${id}: ${error.message}`);
-            this.logger.warn(`⚠️ [ASSISTANT] Fallback sur profileJohn`);
+            this.logger.warn(`⚠️ [ASSISTANT] Fallback sur defaultProfile (mode: ${mode})`);
             
-            // Fallback sur profileJohn en cas d'erreur
+            // Fallback sur defaultProfile en cas d'erreur
             return {
-                instructions: profileJohn.instructions,
-                tools: profileJohn.tools.map(t => ({
+                instructions: getInstructions(),
+                tools: defaultProfile.tools.map(t => ({
                     type: 'function' as const,
                     function: {
                         name: t.name,
@@ -376,23 +447,65 @@ export class AssistantsService {
 
     /**
      * Obtenir l'assistant_id depuis le profil (ou créer un assistant si nécessaire)
+     * Synchronise automatiquement les tools avec le profil
      */
     async getOrCreateAssistant(): Promise<string> {
         // Pour l'instant, on utilise un assistant_id configuré ou on en crée un
-        // TODO: Gérer la création/persistance d'assistant depuis profileJohn
         const assistantId = process.env.OPENAI_ASSISTANT_ID;
+        
+        // Définir les tools une seule fois
+        const profileTools = defaultProfile.tools.map(t => ({
+            type: 'function' as const,
+            function: {
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+            },
+        }));
+        
         if (assistantId) {
             this.logger.log(`✅ [ASSISTANT] Utilisation assistant configuré: ${assistantId}`);
+            
+            // IMPORTANT: Vérifier et synchroniser les tools avec le profil
+            try {
+                const assistant = await this.openai.beta.assistants.retrieve(assistantId);
+                const existingToolNames = (assistant.tools || [])
+                    .filter((t: any) => t.type === 'function')
+                    .map((t: any) => t.function?.name);
+                const requiredToolNames = profileTools.map(t => t.function.name);
+                
+                // Vérifier si tous les tools requis sont présents
+                const missingTools = requiredToolNames.filter(name => !existingToolNames.includes(name));
+                
+                if (missingTools.length > 0) {
+                    this.logger.warn(`⚠️ [ASSISTANT] Tools manquants sur l'assistant: ${missingTools.join(', ')}`);
+                    this.logger.log(`🔧 [ASSISTANT] Mise à jour de l'assistant avec ${profileTools.length} tools...`);
+                    
+                    // Mettre à jour l'assistant avec tous les tools du profil
+                    await this.openai.beta.assistants.update(assistantId, {
+                        tools: profileTools,
+                        instructions: defaultProfile.instructions, // Aussi mettre à jour les instructions
+                    });
+                    
+                    this.logger.log(`✅ [ASSISTANT] Assistant mis à jour avec les tools: ${requiredToolNames.join(', ')}`);
+                } else {
+                    this.logger.log(`✅ [ASSISTANT] Tous les tools sont déjà configurés (${existingToolNames.length} tools)`);
+                }
+            } catch (error: any) {
+                this.logger.error(`❌ [ASSISTANT] Erreur vérification/mise à jour tools: ${error.message}`);
+                // Continuer avec l'assistant existant même si la mise à jour échoue
+            }
+            
             return assistantId;
         }
 
         // Si pas d'assistant_id configuré, créer un assistant depuis le profil
-        this.logger.log('Création assistant depuis profileJohn');
+        this.logger.log('Création assistant depuis defaultProfile');
         
         // IMPORTANT: Les tools sont définis comme "function" dans Assistants API
         // Ils seront exécutés via requires_action → executeTool() dans runAndPoll()
         // Le code gère déjà requires_action, donc on peut activer les tools
-        const tools = profileJohn.tools.map(t => ({
+        const tools = defaultProfile.tools.map(t => ({
             type: 'function' as const,
             function: {
                 name: t.name,
@@ -404,12 +517,13 @@ export class AssistantsService {
         this.logger.log(`🔧 [ASSISTANT] Activation de ${tools.length} tools: ${tools.map(t => t.function.name).join(', ')}`);
         
         try {
+            const assistantName = process.env.AI_ASSISTANT_NAME || 'Noor';
             const assistant = await this.openai.beta.assistants.create({
-                name: 'John',
-                instructions: profileJohn.instructions,
+                name: assistantName,
+                instructions: defaultProfile.instructions,
                 model: process.env.OPENAI_MODEL_TEXT || 'gpt-4o-mini',
                 tools, // Tools activés - seront exécutés via requires_action
-                temperature: profileJohn.temperature,
+                temperature: defaultProfile.temperature,
             });
 
             this.logger.log(`✅ [ASSISTANT] Assistant créé: ${assistant.id} (à configurer dans OPENAI_ASSISTANT_ID)`);

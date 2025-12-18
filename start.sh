@@ -53,8 +53,10 @@ echo "✅ Compilation réussie"
 # Démarrage du service
 echo "🚀 Démarrage du microservice avec Bun..."
 echo ""
-echo "📚 Documentation disponible sur: http://localhost:3001/api/docs"
-echo "🔗 API disponible sur: http://localhost:3001/api/v1"
+
+SERVICE_PORT=${PORT:-3001}
+echo "📚 Documentation disponible sur: http://localhost:${SERVICE_PORT}/api/docs"
+echo "🔗 API disponible sur: http://localhost:${SERVICE_PORT}/api/v1"
 echo ""
 echo "Appuyez sur Ctrl+C pour arrêter le service"
 echo ""

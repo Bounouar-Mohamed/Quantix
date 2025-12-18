@@ -8,7 +8,7 @@ import OpenAI from 'openai';
 import { AssistantAdapter, AssistantRunResult, ToolCall, ToolOutput } from '../interfaces/assistant-adapter.interface';
 import { prisma } from '../../db/prisma';
 import { executeTool } from '../toolRegistry';
-import { profileJohn } from '../modelProfile';
+import { defaultProfile } from '../modelProfile';
 
 @Injectable()
 export class LegacyAssistantAdapter implements AssistantAdapter {
@@ -152,8 +152,8 @@ export class LegacyAssistantAdapter implements AssistantAdapter {
         
         if (!id) {
             return {
-                instructions: profileJohn.instructions,
-                tools: profileJohn.tools.map(t => ({
+                instructions: defaultProfile.instructions,
+                tools: defaultProfile.tools.map(t => ({
                     type: 'function' as const,
                     function: {
                         name: t.name,
@@ -166,7 +166,7 @@ export class LegacyAssistantAdapter implements AssistantAdapter {
 
         const assistant = await this.openai.beta.assistants.retrieve(id);
         return {
-            instructions: assistant.instructions || profileJohn.instructions,
+            instructions: assistant.instructions || defaultProfile.instructions,
             tools: assistant.tools || [],
             // MCP non supporté dans legacy API
             mcpConnections: [],

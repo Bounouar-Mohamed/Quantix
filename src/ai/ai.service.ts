@@ -4,6 +4,23 @@ import OpenAI from 'openai';
 import type { AiMessage, AiResponse, AiUsage } from './interfaces/ai.interface';
 import { AiProvider } from './interfaces/ai.interface';
 import { executeTool } from './toolRegistry';
+import {
+  detectLang,
+  SupportedLang,
+  isProfitQuestion,
+  containsAdvice,
+  isListIntent,
+  mentionsBudget,
+  isCompareIntent,
+  stripUiPropertyBlock,
+  stripGenericFirstQuestion,
+  getProfitResponse,
+  getNoPropertiesResponse,
+  getPropertiesIntro,
+  getPropertiesOutro,
+  getFallbackResponse,
+  getComplianceRewritePrompt,
+} from './utils/response-filters';
 
 @Injectable()
 export class AiService {
@@ -84,10 +101,136 @@ export class AiService {
 
     try {
       const startTime = Date.now();
+      
+      // Récupérer le dernier message utilisateur
+      const lastUserMessageObj = messages.slice().reverse().find(m => m.role === 'user');
+      const lastUserMessage = lastUserMessageObj?.content || '';
+
+      // ============================================
+      // DÉTECTION DE LANGUE (avec logs visibles pour debug)
+      // ============================================
+      const userLang: SupportedLang = detectLang(lastUserMessage);
+      this.logger.log(`🌍 [LANGUE] Détectée: ${userLang} pour message: "${lastUserMessage.substring(0, 50)}..."`);
+
+      // ============================================
+      // DÉTECTION D'INTENTION
+      // ============================================
+      const listIntent = isListIntent(lastUserMessage);
+      const budgetIntent = mentionsBudget(lastUserMessage);
+      const compareIntent = isCompareIntent(lastUserMessage);
+      const profitIntent = isProfitQuestion(lastUserMessage);
+      
+      // On affiche les propriétés UNIQUEMENT si demande explicite de liste OU mention de budget
+      const shouldShowProperties = listIntent || budgetIntent;
+      
+      this.logger.debug(`[INTENTION] list=${listIntent}, budget=${budgetIntent}, compare=${compareIntent}, profit=${profitIntent}, shouldShow=${shouldShowProperties}`);
+
+      // ============================================
+      // BARRIÈRE DURE 1: Questions profit/rentabilité
+      // Réponse hardcoded sans appel au modèle (MULTILINGUE)
+      // ============================================
+      if (profitIntent) {
+        this.logger.warn(`🚫 [PROFIT QUESTION DÉTECTÉE] "${lastUserMessage.substring(0, 50)}..." → Réponse hardcoded (${userLang})`);
+        return {
+          content: getProfitResponse(userLang),
+          provider: AiProvider.OPENAI,
+          model: options?.model || this.config.openai.defaultModel,
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          duration: Date.now() - startTime,
+          timestamp: new Date(),
+        };
+      }
+
+      // ============================================
+      // BARRIÈRE DURE 2: Template backend pour les cards (MULTILINGUE)
+      // Si l'utilisateur demande la liste → on bypass le LLM et on génère directement
+      // ============================================
+      if (shouldShowProperties) {
+        this.logger.log(`🏠 [LIST INTENT] Génération des propriétés via template backend (${userLang})`);
+        try {
+          const output = await executeTool('list_available_properties', {}, { userId: options?.userId || 'anonymous' });
+          const properties = Array.isArray(output) ? output : (output?.properties ?? []);
+
+          if (properties.length === 0) {
+            return {
+              content: getNoPropertiesResponse(userLang),
+              provider: AiProvider.OPENAI,
+              model: options?.model || this.config.openai.defaultModel,
+              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+              duration: Date.now() - startTime,
+              timestamp: new Date(),
+            };
+          }
+
+          // Format fiche simple : container textuel pour chaque bien (sans image)
+          const formatted = properties.map((p: any) => {
+            const status = p.isAvailableNow
+              ? '✅'
+              : p.isUpcoming
+                ? `⏳${p.availableAt ? ` ${p.availableAt}` : ''}`
+                : '';
+
+            const title = p.title || 'Property';
+            
+            // Fiche textuelle structurée (sans image) - neutre/international
+            const fiche = [
+              `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+              `**${title}** ${status}`,
+              `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+              p.id ? `ID : ${p.id}` : '',
+              p.zone ? `Zone : ${p.zone}` : '',
+              p.propertyType ? `Type : ${p.propertyType}` : '',
+              p.pricePerShare ? `Price/share : ${p.pricePerShare} AED` : '',
+              p.bedrooms ? `Bedrooms : ${p.bedrooms}` : '',
+              p.bathrooms ? `Bathrooms : ${p.bathrooms}` : '',
+              p.area ? `Area : ${p.area} sqft` : '',
+              p.remainingShares !== undefined && p.totalShares !== undefined 
+                ? `Shares : ${p.remainingShares} / ${p.totalShares}`
+                : '',
+            ].filter(Boolean).join('\n');
+
+            return fiche;
+          }).join('\n\n');
+
+          return {
+            content: `${getPropertiesIntro(userLang)}\n\n${formatted}\n\n${getPropertiesOutro(userLang)}`,
+            provider: AiProvider.OPENAI,
+            model: options?.model || this.config.openai.defaultModel,
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            duration: Date.now() - startTime,
+            timestamp: new Date(),
+          };
+        } catch (toolError: any) {
+          this.logger.error(`❌ Erreur lors de l'appel list_available_properties: ${toolError.message}`);
+          // Fallback : laisser le modèle répondre normalement
+        }
+      }
+
       // Injecter instructions système si fournies
       const finalMessages = options?.systemInstructions
         ? ([{ role: 'system' as const, content: options.systemInstructions }, ...messages])
         : messages;
+
+      // ============================================
+      // CONTRÔLE DES TOOLS
+      // On désactive les tools si pas de demande de liste pour éviter les appels parasites
+      // ============================================
+      const hasListPropertiesTool = options?.tools?.some(t => t.function.name === 'list_available_properties');
+      
+      let toolChoice: any = 'none';
+      let toolsForThisTurn: typeof options.tools | undefined = undefined;
+      
+      // Si c'est une question de comparaison, on ne donne PAS les tools
+      // Le modèle doit répondre avec le contexte existant sans re-lister
+      if (compareIntent) {
+        this.logger.log(`🔄 [COMPARE INTENT] Tools désactivés pour éviter re-listing`);
+        toolChoice = 'none';
+        toolsForThisTurn = undefined;
+      } else if (hasListPropertiesTool && options?.tools) {
+        // Pour les autres cas, on laisse les tools mais sans forcer
+        toolChoice = undefined; // Laisser le modèle décider
+        toolsForThisTurn = options.tools;
+      }
 
       let response = await this.openaiClient.chat.completions.create({
         model: options?.model || this.config.openai.defaultModel,
@@ -97,7 +240,8 @@ export class AiService {
         })),
         temperature: options?.temperature || this.config.openai.temperature,
         max_tokens: options?.maxTokens || this.config.openai.maxTokens,
-        tools: options?.tools,
+        tools: toolsForThisTurn,
+        tool_choice: toolChoice === 'none' ? 'none' : toolChoice,
       });
 
       // Function calling loop (single pass): if tool calls, execute then ask model to continue
@@ -129,20 +273,79 @@ export class AiService {
           ...toolOutputs.map(to => ({ role: 'tool', tool_call_id: to.tool_call_id, content: to.output }))
         ];
 
+        // Pas de tools pour le follow-up (on a déjà les résultats)
         response = await this.openaiClient.chat.completions.create({
           model: options?.model || this.config.openai.defaultModel,
           messages: followupMessages,
           temperature: options?.temperature || this.config.openai.temperature,
           max_tokens: options?.maxTokens || this.config.openai.maxTokens,
-          tools: options?.tools,
+          // Pas de tools ici pour éviter re-appel
         });
       }
 
       const duration = Date.now() - startTime;
-      const content = response.choices[0]?.message?.content || '';
+      let content = response.choices[0]?.message?.content || '';
       const usage = response.usage;
 
-      this.logger.log(`✅ Réponse OpenAI générée en ${duration}ms`);
+      // ============================================
+      // BARRIÈRE DURE 3: Filtre de conformité (MULTILINGUE)
+      // Si la réponse contient des patterns de conseil, on la réécrit
+      // ============================================
+      if (content && containsAdvice(content)) {
+        this.logger.warn(`🚫 [CONSEIL DÉTECTÉ] Patterns trouvés dans la réponse - Lancement rewrite conformité (${userLang})`);
+        this.logger.debug(`[AVANT REWRITE] ${content.substring(0, 200)}...`);
+        
+        try {
+          const rewrite = await this.openaiClient.chat.completions.create({
+            model: options?.model || this.config.openai.defaultModel,
+            temperature: 0,
+            max_tokens: options?.maxTokens || this.config.openai.maxTokens,
+            messages: [
+              {
+                role: 'system',
+                content: getComplianceRewritePrompt(userLang),
+              },
+              { role: 'user', content }
+            ],
+          });
+
+          const rewrittenContent = rewrite.choices[0]?.message?.content;
+          if (rewrittenContent) {
+            content = rewrittenContent;
+            this.logger.log(`✅ [REWRITE CONFORMITÉ] Réponse corrigée (${userLang})`);
+            this.logger.debug(`[APRÈS REWRITE] ${content.substring(0, 200)}...`);
+          }
+        } catch (rewriteError: any) {
+          this.logger.error(`❌ Erreur lors du rewrite conformité: ${rewriteError.message}`);
+          content = getFallbackResponse(userLang);
+        }
+      }
+
+      // ============================================
+      // BARRIÈRE DURE 4: Anti-duplication
+      // Si ce n'est PAS une demande de liste, on supprime les blocs UI de propriétés
+      // ============================================
+      if (!shouldShowProperties && content) {
+        const originalLength = content.length;
+        content = stripUiPropertyBlock(content);
+        if (content.length !== originalLength) {
+          this.logger.log(`🧹 [ANTI-DUPLICATION] Bloc UI de propriétés supprimé (${originalLength - content.length} chars)`);
+        }
+      }
+
+      // ============================================
+      // BARRIÈRE DURE 5: Anti-questions génériques
+      // Supprime les questions d'onboarding en début de réponse
+      // ============================================
+      if (content) {
+        const beforeStrip = content.length;
+        content = stripGenericFirstQuestion(content);
+        if (content.length !== beforeStrip) {
+          this.logger.log(`🧹 [ANTI-BOUCLE] Question générique supprimée`);
+        }
+      }
+
+      this.logger.log(`✅ Réponse OpenAI générée en ${Date.now() - startTime}ms (${userLang})`);
 
       return {
         content,
@@ -153,7 +356,7 @@ export class AiService {
           completionTokens: usage?.completion_tokens || 0,
           totalTokens: usage?.total_tokens || 0,
         },
-        duration,
+        duration: Date.now() - startTime,
         timestamp: new Date(),
       };
 
