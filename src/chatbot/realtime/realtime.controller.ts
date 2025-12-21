@@ -12,7 +12,9 @@ import {
     HttpStatus,
     Req,
     Ip,
-    Headers
+    Headers,
+    BadRequestException,
+    Logger,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
@@ -20,9 +22,72 @@ import { RealtimeService } from './realtime.service';
 import { CreateEphemeralTokenDto, EphemeralTokenResponseDto, ExecuteToolDto } from './dto/realtime.dto';
 import type { Request } from 'express';
 
+// ══════════════════════════════════════════════════════════════════════════════
+// SÉCURITÉ: Validation et sanitisation des identifiants
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Regex pour valider les identifiants (userId, tenantId, sessionId)
+ * Autorise: lettres, chiffres, tirets, underscores, et UUIDs
+ * Longueur: 1-128 caractères
+ */
+const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Valide et sanitise un identifiant
+ * @throws BadRequestException si l'identifiant est invalide
+ */
+function validateIdentifier(value: string | undefined, fieldName: string, required: boolean = false): string | undefined {
+    if (!value || value.trim() === '') {
+        if (required) {
+            throw new BadRequestException(`${fieldName} est requis`);
+        }
+        return undefined;
+    }
+    
+    const trimmed = value.trim();
+    
+    // Vérifier la longueur
+    if (trimmed.length > 128) {
+        throw new BadRequestException(`${fieldName} trop long (max 128 caractères)`);
+    }
+    
+    // Vérifier le format (UUID ou ID simple)
+    if (!SAFE_ID_REGEX.test(trimmed) && !UUID_REGEX.test(trimmed)) {
+        throw new BadRequestException(`${fieldName} contient des caractères invalides`);
+    }
+    
+    return trimmed;
+}
+
+/**
+ * Détecte les tentatives d'injection dans les headers
+ */
+function detectHeaderInjection(headers: Record<string, string | undefined>): void {
+    const suspiciousPatterns = [
+        /[\r\n]/,           // Injection de ligne
+        /<script/i,         // XSS
+        /javascript:/i,     // XSS
+        /\x00/,             // Null byte
+    ];
+    
+    for (const [key, value] of Object.entries(headers)) {
+        if (value) {
+            for (const pattern of suspiciousPatterns) {
+                if (pattern.test(value)) {
+                    throw new BadRequestException(`Header ${key} contient des caractères suspects`);
+                }
+            }
+        }
+    }
+}
+
 @ApiTags('chatbot-realtime')
 @Controller('chatbot/realtime')
 export class RealtimeController {
+    private readonly logger = new Logger(RealtimeController.name);
+    
     constructor(private readonly realtimeService: RealtimeService) {}
 
     /**
@@ -30,7 +95,7 @@ export class RealtimeController {
      * Endpoint: POST /api/v1/chatbot/realtime/ephemeral-token
      */
     @Post('ephemeral-token')
-    @Throttle(3, 60)
+    @Throttle({ default: { limit: 3, ttl: 60000 } })
     @HttpCode(HttpStatus.OK)
     @ApiOperation({
         summary: 'Créer un token éphémère pour session Realtime',
@@ -101,9 +166,16 @@ export class RealtimeController {
         @Headers('accept-language') acceptLanguage?: string,
         @Headers('locale') locale?: string
     ) {
+        // SÉCURITÉ: Détecter les injections dans les headers
+        detectHeaderInjection({ 'user-id': userId, 'tenant-id': tenantId, locale, 'accept-language': acceptLanguage });
+        
+        // SÉCURITÉ: Valider et sanitiser les identifiants
+        const safeUserId = validateIdentifier(userId, 'user-id');
+        const safeTenantId = validateIdentifier(tenantId, 'tenant-id');
+        
         // Utiliser locale ou accept-language pour détecter la langue
         const detectedLocale = locale || acceptLanguage || 'en';
-        return await this.realtimeService.getConfig(userId, tenantId, detectedLocale);
+        return await this.realtimeService.getConfig(safeUserId, safeTenantId, detectedLocale);
     }
 
     /**
@@ -111,15 +183,31 @@ export class RealtimeController {
      * Endpoint: POST /api/v1/chatbot/tools/execute
      */
     @Post('tools/execute')
-    @Throttle(15, 60)
+    @Throttle({ default: { limit: 15, ttl: 60000 } })
     @HttpCode(HttpStatus.OK)
     @ApiOperation({
         summary: 'Exécuter un tool appelé par le modèle',
         description: 'Bridge entre le modèle et le serveur métier (CRM-API)'
     })
     @ApiResponse({ status: 200, description: 'Tool exécuté' })
+    @ApiResponse({ status: 400, description: 'Requête invalide ou identifiants suspects' })
     async executeTool(@Body() dto: ExecuteToolDto) {
-        return await this.realtimeService.executeTool(dto);
+        // SÉCURITÉ: Valider les identifiants dans le DTO
+        const safeUserId = validateIdentifier(dto.userId, 'userId', true);
+        const safeSessionId = validateIdentifier(dto.sessionId, 'sessionId', true);
+        
+        // SÉCURITÉ: Valider le nom du tool (pas d'injection)
+        if (dto.name && !/^[a-z_]{1,64}$/.test(dto.name)) {
+            throw new BadRequestException('Nom de tool invalide');
+        }
+        
+        this.logger.debug(`[TOOL] Exécution demandée: ${dto.name} par ${safeUserId}`);
+        
+        return await this.realtimeService.executeTool({
+            ...dto,
+            userId: safeUserId!,
+            sessionId: safeSessionId!,
+        });
     }
 
     /**

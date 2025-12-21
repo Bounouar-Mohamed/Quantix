@@ -1,0 +1,28 @@
+# Environnement et secrets
+.env
+.env.*
+.env.local
+.env.*.local
+*.bak
+
+# Dépendances
+node_modules/
+dist/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal

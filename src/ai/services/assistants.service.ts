@@ -1,9 +1,12 @@
 /**
- * Service pour gérer les threads OpenAI Assistants
- * Unifie chat REST et Realtime via assistant_thread_id
+ * ══════════════════════════════════════════════════════════════════════════════
+ * ASSISTANTS SERVICE - Gestion des threads OpenAI Assistants
+ * ══════════════════════════════════════════════════════════════════════════════
  * 
- * PRÉPARATION MIGRATION : Ce service utilisera bientôt AssistantAdapter
- * pour supporter Responses API + MCP. Actuellement utilise l'API legacy.
+ * Ce service gère la persistance des conversations via OpenAI Assistants API :
+ * - Création/récupération de threads
+ * - Exécution de runs avec tool calling
+ * - Synchronisation multi-tenant
  */
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
@@ -12,16 +15,7 @@ import OpenAI from 'openai';
 import { prisma } from '../../db/prisma';
 import { executeTool } from '../toolRegistry';
 import { defaultProfile, getRealtimeInstructionsForLang } from '../modelProfile';
-import { AssistantAdapter } from '../interfaces/assistant-adapter.interface';
-import { LegacyAssistantAdapter } from '../adapters/legacy-assistant.adapter';
-import { 
-  isProfitQuestion,
-  detectLang,
-  getProfitResponse,
-  cleanResponse,
-  shouldShowProperties,
-  stripGenericFirstQuestion,
-} from '../utils/response-filters';
+import { cleanResponse, stripGenericFirstQuestion } from '../utils/response-filters';
 
 @Injectable()
 export class AssistantsService {

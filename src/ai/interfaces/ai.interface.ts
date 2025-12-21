@@ -1,6 +1,5 @@
 export enum AiProvider {
   OPENAI = 'openai',
-  ANTHROPIC = 'anthropic',
 }
 
 // Interface exportée (Bun devrait la reconnaître)

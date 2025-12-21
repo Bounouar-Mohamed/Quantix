@@ -7,16 +7,66 @@ import WebSocket from 'ws';
 import { Server } from 'http';
 import OpenAI, { toFile } from 'openai';
 import { defaultProfile } from '../../../ai/modelProfile';
-import { buildRealtimeSessionUpdate } from '../ai/transports/openaiRealtime';
-import { executeTool } from '../ai/toolRegistry';
-import { ChatService } from '../ai/services/chatService';
-import { generateTTS } from '../ai/services/ttsService';
-import { 
-    forwardAssistantText, 
-    forwardAssistantAudioDelta, 
-    forwardAssistantCitations, 
-    forwardUserTranscript 
-} from '../ai/eventRouter';
+import { buildRealtimeSessionUpdate } from '../../../ai/transports/openaiRealtime';
+import { executeTool } from '../../../ai/toolRegistry';
+import { generateTTS } from '../../../ai/services/ttsService';
+
+// Event forwarders - inline pour simplifier (eventRouter supprimé)
+function forwardAssistantText(
+    clientWs: WebSocket, 
+    text: string, 
+    responseId?: string, 
+    source?: string, 
+    timestamp?: number | string
+): void {
+    if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+            type: 'assistant.text',
+            text,
+            responseId,
+            source,
+            timestamp,
+        }));
+    }
+}
+
+function forwardAssistantAudioDelta(clientWs: WebSocket, delta: string, itemId?: string): void {
+    if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+            type: 'assistant.audio_delta',
+            delta,
+            itemId,
+        }));
+    }
+}
+
+function forwardAssistantCitations(clientWs: WebSocket, citations: any[]): void {
+    if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+            type: 'assistant.citations',
+            citations,
+        }));
+    }
+}
+
+function forwardUserTranscript(
+    clientWs: WebSocket, 
+    transcript: string, 
+    timestampOrIsFinal?: number | boolean | string
+): void {
+    if (clientWs.readyState === WebSocket.OPEN) {
+        const isFinal = typeof timestampOrIsFinal === 'boolean' ? timestampOrIsFinal : true;
+        const timestamp = typeof timestampOrIsFinal === 'number' || typeof timestampOrIsFinal === 'string' 
+            ? timestampOrIsFinal 
+            : undefined;
+        clientWs.send(JSON.stringify({
+            type: 'user.transcript',
+            transcript,
+            isFinal,
+            timestamp,
+        }));
+    }
+}
 
 /**
  * Interface pour une connexion Realtime
@@ -49,7 +99,6 @@ export class RealtimeWebSocketServer {
     private connections = new Map<WebSocket, RealtimeConnection>();
     private userSTTStates = new Map<string, UserSTTState>();
     private openai: OpenAI;
-    private chatService: ChatService;
 
     constructor(server: Server) {
         this.wss = new WebSocket.Server({
@@ -65,9 +114,6 @@ export class RealtimeWebSocketServer {
         this.openai = new OpenAI({
             apiKey: process.env.OPENAI_API_KEY,
         });
-
-        // Initialiser le service Chat
-        this.chatService = new ChatService(this.openai);
 
         this.setupEventHandlers();
 
@@ -87,6 +133,27 @@ export class RealtimeWebSocketServer {
             }
         } else {
             console.log('🔍 Recherche web: DÉSACTIVÉE');
+        }
+    }
+
+    /**
+     * Génère une réponse texte via Chat Completions
+     */
+    private async generateText(prompt: string): Promise<string> {
+        try {
+            const completion = await this.openai.chat.completions.create({
+                model: process.env.OPENAI_MODEL_TEXT || 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: defaultProfile.instructions },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: defaultProfile.temperature,
+                max_tokens: 2000,
+            });
+            return completion.choices[0]?.message?.content || 'Désolé, une erreur est survenue.';
+        } catch (error) {
+            console.error('❌ Chat generation failed:', error);
+            return 'Désolé, une erreur est survenue.';
         }
     }
 
@@ -755,7 +822,7 @@ export class RealtimeWebSocketServer {
 
                             (async () => {
                                 try {
-                                    const answer = await this.chatService.generateText(sttState.accumulatedTranscript);
+                                    const answer = await this.generateText(sttState.accumulatedTranscript);
 
                                     const genTime = Date.now() - startTime;
                                     console.log(`✅ Réponse REST générée en ${genTime}ms: "${answer.substring(0, 50)}..."`);
@@ -845,7 +912,7 @@ export class RealtimeWebSocketServer {
                                 console.log(`📤 Génération REST déclenchée après transcription complète`);
                                 (async () => {
                                     try {
-                                        const answer = await this.chatService.generateText(text);
+                                        const answer = await this.generateText(text);
 
                                         const genTime = Date.now() - startTime;
                                         console.log(`✅ Réponse REST générée en ${genTime}ms: "${answer.substring(0, 50)}..."`);
@@ -977,7 +1044,7 @@ export class RealtimeWebSocketServer {
 
                             (async () => {
                                 try {
-                                    const answer = await this.chatService.generateText(userPrompt);
+                                    const answer = await this.generateText(userPrompt);
 
                                     if (clientWs.readyState === WebSocket.OPEN) {
                                         forwardAssistantText(clientWs, answer, undefined, 'rest-fallback');

@@ -79,11 +79,18 @@ export class GenerationController {
       .find((m) => m.role === 'user')?.content;
 
     try {
-      // Vérifier si on doit utiliser Assistants API (flag X-Use-Assistants)
-      const useAssistants = useAssistantsHeader === 'true' || process.env.USE_ASSISTANTS_API === 'true';
-      this.debug(`useAssistants=${useAssistants}`);
+      // Choisir le moteur de génération (chat vs assistants)
+      const envEngine = (process.env.AI_GENERATION_ENGINE || (process.env.USE_ASSISTANTS_API === 'true' ? 'assistants' : 'chat')).toLowerCase();
+      const headerOverride = (useAssistantsHeader || '').toLowerCase();
+      let generationEngine: 'assistants' | 'chat' = envEngine === 'assistants' ? 'assistants' : 'chat';
+      if (headerOverride === 'assistants' || headerOverride === 'true') {
+        generationEngine = 'assistants';
+      } else if (headerOverride === 'chat' || headerOverride === 'false') {
+        generationEngine = 'chat';
+      }
+      this.debug(`generationEngine=${generationEngine}`);
 
-      if (useAssistants) {
+      if (generationEngine === 'assistants') {
       // Utiliser Assistants API avec threads (comme ChatGPT : toujours upsert + écrire user + run + réponse déjà dans thread)
       try {
         const assistantId = await this.assistantsService.getOrCreateAssistant();
@@ -154,19 +161,19 @@ export class GenerationController {
             });
             return assistantResponse;
           } catch (runError: any) {
-            // Si le run Assistants échoue, fallback vers Chat Completions mais on garde la journalisation
+              // Si le run Assistants échoue, fallback vers Chat Completions
             this.logger.warn(`Run Assistants échoué, fallback Chat Completions: ${runError.message}`);
-            // Continuer avec le fallback Chat Completions ci-dessous
+              generationEngine = 'chat';
           }
         }
       } catch (assistantsError: any) {
         // Si erreur lors de la création du thread/assistant, fallback Chat Completions
         this.logger.warn(`Erreur Assistants, fallback Chat Completions: ${assistantsError.message}`);
-        // Continuer avec le fallback Chat Completions ci-dessous
+          generationEngine = 'chat';
       }
       }
 
-      // Fallback: utiliser l'ancien flux Chat Completions
+      // Chat Completions (moteur principal ou fallback)
       // IMPORTANT: Même avec Chat Completions, on journalise dans le thread pour mémoire unifiée
       const systemInstructions = buildSystemPrompt(defaultProfile, user, conv);
       const allowedTools = buildAllowedTools(defaultProfile, user);
@@ -246,7 +253,6 @@ export class GenerationController {
         model: request.model || defaultModel,
         temperature: (request.temperature ?? defaultTemp),
         maxTokens: request.maxTokens,
-        provider: request.provider,
         systemInstructions,
         tools,
         userId: actorUserId,

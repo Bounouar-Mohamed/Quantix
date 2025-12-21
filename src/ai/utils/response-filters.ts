@@ -3,6 +3,9 @@
  * Utilisé par ai.service.ts et assistants.service.ts
  */
 
+import { isCompareIntent, isListIntent, mentionsBudget } from './intent-detectors';
+export { isCompareIntent, isListIntent, mentionsBudget } from './intent-detectors';
+
 // ============================================
 // DÉTECTION DE LANGUE
 // ============================================
@@ -157,6 +160,300 @@ export function getFallbackResponse(lang: SupportedLang): string {
 }
 
 // ============================================
+// COPY POUR LES CARTES PROPRIÉTÉS
+// ============================================
+
+type PropertyCopy = {
+  sectionAvailable: string;
+  sectionUpcoming: string;
+  noAvailable: string;
+  noUpcoming: string;
+  labels: {
+    pitch: string;
+    id: string;
+    price: string;
+    shares: string;
+    zone: string;
+    type: string;
+    bedsBaths: string;
+    area: string;
+    image: string;
+  };
+  statusAvailable: string;
+  statusUpcoming: string;
+  cta?: string;
+};
+
+const PROPERTY_COPY: Record<SupportedLang, PropertyCopy> = {
+  fr: {
+    sectionAvailable: '✅ Propriétés disponibles maintenant',
+    sectionUpcoming: '⏳ Prochaines opportunités',
+    noAvailable: "Aucune propriété disponible pour l'instant.",
+    noUpcoming: "Aucune propriété à venir n'est annoncée pour l'instant.",
+    labels: {
+      pitch: 'Pitch',
+      id: 'ID',
+      price: 'Prix par part',
+      shares: 'Parts restantes',
+      zone: 'Zone',
+      type: 'Type',
+      bedsBaths: 'Chambres / Salles de bains',
+      area: 'Superficie',
+      image: 'Image',
+    },
+    statusAvailable: 'Disponible maintenant',
+    statusUpcoming: 'Bientôt disponible',
+    cta: "Tu veux que je t'affiche la fiche complète ?",
+  },
+  en: {
+    sectionAvailable: '✅ Available now',
+    sectionUpcoming: '⏳ Upcoming opportunities',
+    noAvailable: 'No properties are currently available.',
+    noUpcoming: 'No upcoming properties have been announced yet.',
+    labels: {
+      pitch: 'Pitch',
+      id: 'ID',
+      price: 'Price per share',
+      shares: 'Remaining shares',
+      zone: 'Zone',
+      type: 'Type',
+      bedsBaths: 'Bedrooms / Bathrooms',
+      area: 'Area',
+      image: 'Image',
+    },
+    statusAvailable: 'Available now',
+    statusUpcoming: 'Coming soon',
+    cta: 'Want me to show you the full sheet?',
+  },
+  ar: {
+    sectionAvailable: '✅ العقارات المتاحة الآن',
+    sectionUpcoming: '⏳ العقارات القادمة',
+    noAvailable: 'لا توجد عقارات متاحة حالياً.',
+    noUpcoming: 'لا توجد عقارات قادمة معلن عنها حالياً.',
+    labels: {
+      pitch: 'نبذة',
+      id: 'المعرف',
+      price: 'السعر لكل حصة',
+      shares: 'الحصص المتبقية',
+      zone: 'المنطقة',
+      type: 'النوع',
+      bedsBaths: 'غرف / حمامات',
+      area: 'المساحة',
+      image: 'الصورة',
+    },
+    statusAvailable: 'متاح الآن',
+    statusUpcoming: 'متوفر قريباً',
+    cta: 'تحب أعرض لك البطاقة الكاملة؟',
+  },
+};
+
+export type PropertySummary = {
+  id?: string;
+  title?: string;
+  zone?: string;
+  type?: string;
+  pricePerShare?: number;
+  pricePerShareFormatted?: string;
+  availableShares?: number;
+  totalShares?: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  totalArea?: string;
+  mainImage?: string;
+  pitch?: string;
+  description?: string;
+  isAvailableNow?: boolean;
+  availableAt?: string | null;
+  statusEmoji?: string;
+  statusText?: string;
+  section?: 'available' | 'upcoming';
+};
+
+export type PropertySectionsPayload = {
+  properties?: PropertySummary[];
+  groups?: {
+    available?: PropertySummary[];
+    upcoming?: PropertySummary[];
+  };
+  sections?: Array<{
+    key: string;
+    title?: string;
+    emoji?: string;
+    count?: number;
+    properties?: PropertySummary[];
+  }>;
+};
+
+const NO_DATA = 'N/A';
+
+function getPropertyCopy(lang: SupportedLang): PropertyCopy {
+  return PROPERTY_COPY[lang] || PROPERTY_COPY.en;
+}
+
+/**
+ * Copies UI pour le payload structuré (utilisées par le frontend)
+ */
+export type UiCopyPayload = {
+  sectionAvailable: string;
+  sectionUpcoming: string;
+  sectionEmpty: string;
+  badgeAvailable: string;
+  badgeUpcoming: string;
+  countdownLabel: string;
+  discoverCta: string;
+  comingSoonCta: string;
+  untitledProperty: string;
+  unknownZone: string;
+  unknownType: string;
+  unknownPrice: string;
+  currency: string;
+};
+
+const UI_COPY_PAYLOAD: Record<SupportedLang, UiCopyPayload> = {
+  fr: {
+    sectionAvailable: 'Disponible maintenant',
+    sectionUpcoming: 'Prochainement',
+    sectionEmpty: 'Aucune propriété dans cette section.',
+    badgeAvailable: 'Disponible',
+    badgeUpcoming: 'Bientôt',
+    countdownLabel: 'Dans',
+    discoverCta: 'Voir la fiche',
+    comingSoonCta: 'Bientôt disponible',
+    untitledProperty: 'Propriété Reccos',
+    unknownZone: 'Zone non précisée',
+    unknownType: 'Type non précisé',
+    unknownPrice: 'Prix sur demande',
+    currency: 'AED',
+  },
+  en: {
+    sectionAvailable: 'Available now',
+    sectionUpcoming: 'Coming soon',
+    sectionEmpty: 'No properties in this section.',
+    badgeAvailable: 'Available',
+    badgeUpcoming: 'Soon',
+    countdownLabel: 'In',
+    discoverCta: 'View details',
+    comingSoonCta: 'Coming soon',
+    untitledProperty: 'Reccos Property',
+    unknownZone: 'Zone not specified',
+    unknownType: 'Type not specified',
+    unknownPrice: 'Price on request',
+    currency: 'AED',
+  },
+  ar: {
+    sectionAvailable: 'متاح الآن',
+    sectionUpcoming: 'قريباً',
+    sectionEmpty: 'لا توجد عقارات في هذا القسم.',
+    badgeAvailable: 'متاح',
+    badgeUpcoming: 'قريباً',
+    countdownLabel: 'بعد',
+    discoverCta: 'عرض التفاصيل',
+    comingSoonCta: 'قريباً',
+    untitledProperty: 'عقار ريكوس',
+    unknownZone: 'منطقة غير محددة',
+    unknownType: 'نوع غير محدد',
+    unknownPrice: 'السعر عند الطلب',
+    currency: 'AED',
+  },
+};
+
+export function getUiCopyForPayload(lang: SupportedLang): UiCopyPayload {
+  return UI_COPY_PAYLOAD[lang] || UI_COPY_PAYLOAD.en;
+}
+
+function formatDateForLang(dateValue: string | null | undefined, lang: SupportedLang): string | null {
+  if (!dateValue) {
+    return null;
+  }
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return dateValue;
+  }
+  const locale = lang === 'fr' ? 'fr-FR' : lang === 'ar' ? 'ar-AE' : 'en-US';
+  return new Intl.DateTimeFormat(locale, {
+    day: '2-digit',
+    month: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function formatPropertyCard(property: PropertySummary, lang: SupportedLang): string {
+  const copy = getPropertyCopy(lang);
+  const labels = copy.labels;
+  const pitch = property.pitch || property.description || '';
+  const statusText = property.isAvailableNow
+    ? copy.statusAvailable
+    : `${copy.statusUpcoming}${formatDateForLang(property.availableAt, lang) ? ` (${formatDateForLang(property.availableAt, lang)})` : ''}`;
+
+  const beds = property.bedrooms !== undefined ? property.bedrooms : NO_DATA;
+  const baths = property.bathrooms !== undefined ? property.bathrooms : NO_DATA;
+  const shares =
+    property.availableShares !== undefined && property.totalShares !== undefined
+      ? `${property.availableShares} / ${property.totalShares}`
+      : NO_DATA;
+  const area = property.totalArea || NO_DATA;
+
+  const lines = [
+    pitch ? `${pitch}` : null,
+    `${property.title || 'Property'} ${property.statusEmoji || ''} ${statusText}`.trim(),
+    `${labels.id} : ${property.id || NO_DATA}`,
+    `${labels.price} : ${property.pricePerShareFormatted || (property.pricePerShare ? `${property.pricePerShare} AED` : NO_DATA)}`,
+    `${labels.shares} : ${shares}`,
+    `${labels.zone} : ${property.zone || NO_DATA}`,
+    `${labels.type} : ${property.type || NO_DATA}`,
+    `${labels.bedsBaths} : ${beds} / ${baths}`,
+    `${labels.area} : ${area}`,
+    `${labels.image} : ${property.mainImage || NO_DATA}`,
+  ];
+
+  return lines.filter(Boolean).join('\n');
+}
+
+function ensureGroups(payload?: PropertySectionsPayload) {
+  const props = payload?.properties || [];
+  const available =
+    payload?.groups?.available ??
+    props.filter((p) => p.isAvailableNow || p.section === 'available');
+  const upcoming =
+    payload?.groups?.upcoming ??
+    props.filter((p) => p.isAvailableNow === false || p.section === 'upcoming');
+  return { available, upcoming };
+}
+
+function renderSection(
+  lang: SupportedLang,
+  title: string,
+  emoji: string,
+  properties: PropertySummary[],
+  emptyText: string,
+): string {
+  const header = `${emoji} ${title}`.trim();
+  if (!properties.length) {
+    return `${header}\n${emptyText}`;
+  }
+
+  const cards = properties.map((property) => formatPropertyCard(property, lang));
+  return `${header}\n\n${cards.join('\n\n')}`;
+}
+
+export function renderPropertyListMessage(payload: PropertySectionsPayload, lang: SupportedLang): string {
+  const copy = getPropertyCopy(lang);
+  const { available, upcoming } = ensureGroups(payload);
+
+  const sectionsText = [
+    renderSection(lang, copy.sectionAvailable, '✅', available, copy.noAvailable),
+    renderSection(lang, copy.sectionUpcoming, '⏳', upcoming, copy.noUpcoming),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const outro = copy.cta || getPropertiesOutro(lang);
+
+  return [getPropertiesIntro(lang), sectionsText, outro].filter(Boolean).join('\n\n');
+}
+
+// ============================================
 // PROMPT DE REWRITE CONFORMITÉ (multilingue)
 // ============================================
 
@@ -231,46 +528,6 @@ export function containsAdvice(text: string): boolean {
 export function isProfitQuestion(text: string): boolean {
   const lowerText = text.toLowerCase();
   return PROFIT_KEYWORDS.some(kw => lowerText.includes(kw));
-}
-
-// ============================================
-// DÉTECTION D'INTENTION STRICTE
-// ============================================
-
-// Intention "lister les propriétés" (demande explicite)
-export const LIST_INTENT_PATTERNS = [
-  // FR
-  /\b(liste|lister|montre|affiche)\b.*\b(propri[eé]t[eé]s?|biens?)\b/i,
-  /\b(propri[eé]t[eé]s?|biens?)\b.*\b(disponibles?|dispo)\b/i,
-  /qu['']?est[- ]ce que vous avez/i,
-  /quoi de dispo/i,
-  // EN
-  /\b(list|show|display)\b.*\b(properties|available)\b/i,
-  /\b(properties)\b.*\b(available)\b/i,
-  /available properties/i,
-  /what do you have/i,
-  /\b(see|view)\b.*\b(properties)\b/i,
-  // AR
-  /عرض.*عقار/i,
-  /العقارات.*المتاحة/i,
-];
-
-// Intention "budget" (l'utilisateur mentionne un montant)
-export const BUDGET_PATTERN = /\b\d[\d\s,.]*\s*(aed|dirham|dhs|usd|eur|€|\$|درهم)\b/i;
-
-// Intention "comparer" (questions sur choix sans demander la liste)
-export const COMPARE_INTENT_PATTERN = /\b(laquelle|lequel|choisir|mieux|plus int[eé]ressant|compare|comparaison|which one|between|أي|أيهما)\b/i;
-
-export function isListIntent(text: string): boolean {
-  return LIST_INTENT_PATTERNS.some(r => r.test(text));
-}
-
-export function mentionsBudget(text: string): boolean {
-  return BUDGET_PATTERN.test(text);
-}
-
-export function isCompareIntent(text: string): boolean {
-  return COMPARE_INTENT_PATTERN.test(text);
 }
 
 // ============================================

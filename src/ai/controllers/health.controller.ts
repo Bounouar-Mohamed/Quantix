@@ -21,7 +21,6 @@ export class HealthController {
     const health = await this.aiService.checkHealth();
     return {
       openai: health.openai,
-      anthropic: health.anthropic,
       overall: health.overall,
       timestamp: new Date(),
     };

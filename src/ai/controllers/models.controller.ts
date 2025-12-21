@@ -1,7 +1,6 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AiService } from '../ai.service';
-import { AiProvider } from '../interfaces/ai.interface';
 
 @ApiTags('ai')
 @Controller('ai/models')
@@ -11,7 +10,7 @@ export class ModelsController {
   @Get()
   @ApiOperation({
     summary: 'Obtenir les modèles disponibles',
-    description: 'Récupère la liste des modèles IA disponibles pour un provider'
+    description: 'Récupère la liste des modèles OpenAI disponibles'
   })
   @ApiResponse({
     status: 200,
@@ -21,8 +20,8 @@ export class ModelsController {
       items: { type: 'string' },
     },
   })
-  async getAvailableModels(@Query('provider') provider?: string): Promise<string[]> {
-    return this.aiService.getAvailableModels(provider as AiProvider);
+  async getAvailableModels(): Promise<string[]> {
+    return this.aiService.getAvailableModels();
   }
 }
 

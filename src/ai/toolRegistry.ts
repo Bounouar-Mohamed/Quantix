@@ -229,12 +229,32 @@ export const toolHandlers: Record<string, ToolHandler> = {
                               minute: '2-digit',
                           })
                         : null;
-                    // Labels in English for international compatibility
                     const availabilityLabel = isAvailableNow
-                        ? '✅ Available now - Can invest immediately'
+                        ? '✅ Available now - invest immediately'
                         : friendlyDate
                         ? `⏳ Coming soon (${friendlyDate})`
                         : '⏳ Coming soon';
+                    const statusEmoji = isAvailableNow ? '✅' : '⏳';
+                    const statusText = isAvailableNow ? 'Available now' : (friendlyDate ? `Coming soon (${friendlyDate})` : 'Coming soon');
+                    const rawDescription = (p.shortDescription || p.description || '').trim();
+                    const pitch = rawDescription
+                        ? rawDescription.split('\n')[0].slice(0, 180)
+                        : isAvailableNow
+                        ? `Accès immédiat à ${p.title || 'cette propriété'}.`
+                        : `Propriété à venir : ${p.title || 'nouvelle opportunité'}.`;
+                    const totalArea = p.totalArea ? `${p.totalArea} sqft` : p.builtArea ? `${p.builtArea} sqft` : 'N/A';
+                    const cardLines = [
+                        `[Pitch] ${pitch}`,
+                        `${p.title || 'Propriété Reccos'} ${statusEmoji} ${statusText}`,
+                        `- ID : ${p.id}`,
+                        `- Prix par part : ${Number(p.pricePerShare).toLocaleString()} AED`,
+                        `- Parts restantes : ${p.totalShares - (p.soldShares || 0)} sur ${p.totalShares}`,
+                        `- Zone : ${p.zone || p.emirate || 'N/A'}`,
+                        `- Type : ${p.propertyType || 'N/A'}`,
+                        `- Chambres : ${p.bedrooms ?? 'N/A'} | Salles de bains : ${p.bathrooms ?? 'N/A'}`,
+                        `- Superficie : ${totalArea}`,
+                        `- Image : ${p.mainImage || 'N/A'}`,
+                    ].join('\n');
 
                     return {
                         id: p.id,
@@ -250,15 +270,20 @@ export const toolHandlers: Record<string, ToolHandler> = {
                             p.totalShares > 0 ? Math.round(((p.soldShares || 0) / p.totalShares) * 100) : 0,
                         bedrooms: p.bedrooms,
                         bathrooms: p.bathrooms,
-                        totalArea: p.totalArea ? `${p.totalArea} sqft` : null,
+                        totalArea,
                         mainImage: p.mainImage,
                         completionStatus: p.completionStatus,
-                        description: p.description?.substring(0, 200) + '...',
+                        description: rawDescription,
+                        pitch,
                         availableAt: p.availableAt || null,
                         isAvailableNow,
                         isUpcoming: !isAvailableNow,
                         status: isAvailableNow ? 'AVAILABLE' : 'UPCOMING',
                         availabilityLabel,
+                        statusEmoji,
+                        statusText,
+                        section: isAvailableNow ? 'available' : 'upcoming',
+                        cardTemplate: cardLines,
                     };
                 })
                 .filter((property) => {
@@ -270,6 +295,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
                     }
                     return true;
                 });
+
+            const availableProperties = formattedProperties.filter((property) => property.isAvailableNow);
+            const upcomingProperties = formattedProperties.filter((property) => property.isUpcoming);
+            const orderedProperties = [...availableProperties, ...upcomingProperties];
 
             if (formattedProperties.length === 0) {
                 return {
@@ -290,15 +319,39 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
             logger.log(`✅ [list_available_properties] ${formattedProperties.length} propriétés (live + upcoming) trouvées`);
             
+            const sections = [
+                {
+                    key: 'available',
+                    title: 'Available now',
+                    emoji: '✅',
+                    count: availableProperties.length,
+                    properties: availableProperties,
+                },
+                {
+                    key: 'upcoming',
+                    title: 'Upcoming',
+                    emoji: '⏳',
+                    count: upcomingProperties.length,
+                    properties: upcomingProperties,
+                },
+            ];
+
             return {
-                count: formattedProperties.length,
-                properties: formattedProperties,
+                count: orderedProperties.length,
+                properties: orderedProperties,
+                groups: {
+                    available: availableProperties,
+                    upcoming: upcomingProperties,
+                },
+                sections,
                 filters: args,
                 meta: {
                     requestedFilters,
                     zoneFallbackUsed,
                     globalFallbackUsed,
                     globalFallbackReason,
+                    availableCount: availableProperties.length,
+                    upcomingCount: upcomingProperties.length,
                 },
             };
         } catch (error: any) {

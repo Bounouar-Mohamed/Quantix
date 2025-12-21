@@ -174,6 +174,7 @@ export class ReccosApiClient {
     bedrooms?: number;
     limit?: number;
     page?: number;
+    search?: string; // Recherche textuelle
   }): Promise<any[]> {
     try {
       // Construire les query params

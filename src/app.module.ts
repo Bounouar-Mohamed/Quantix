@@ -11,6 +11,7 @@ import { AutomationModule } from './automation/automation.module';
 import { DatabaseModule } from './database/database.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { RealtimeModule } from './chatbot/realtime/realtime.module';
+import { TenantsModule } from './tenants/tenants.module';
 
 // Configuration
 import { aiConfig } from './common/config/ai.config';
@@ -40,6 +41,7 @@ import { InternalApiGuard } from './common/guards/internal-api.guard';
     DatabaseModule,
     MonitoringModule,
     RealtimeModule,
+    TenantsModule,
   ],
   providers: [
     {

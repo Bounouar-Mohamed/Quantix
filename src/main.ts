@@ -12,11 +12,87 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
 
-  // Configuration de sécurité
-  app.use(helmet());
+  // ══════════════════════════════════════════════════════════════════════════════
+  // SÉCURITÉ: Configuration Helmet renforcée
+  // ══════════════════════════════════════════════════════════════════════════════
+  app.use(helmet({
+    // Content Security Policy - Empêche XSS et injection de scripts
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://api.openai.com", "wss://api.openai.com"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        upgradeInsecureRequests: [],
+      },
+    },
+    // HSTS - Force HTTPS
+    hsts: {
+      maxAge: 31536000, // 1 an
+      includeSubDomains: true,
+      preload: true,
+    },
+    // Empêche le clickjacking
+    frameguard: { action: 'deny' },
+    // Cache les infos du serveur
+    hidePoweredBy: true,
+    // Empêche le MIME sniffing
+    noSniff: true,
+    // Protection XSS
+    xssFilter: true,
+    // Politique de référent stricte
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  }));
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // SÉCURITÉ: Configuration CORS stricte
+  // ══════════════════════════════════════════════════════════════════════════════
+  const allowedOrigins = configService.get<string>('CORS_ORIGINS', '');
+  const corsOrigins = allowedOrigins
+    ? allowedOrigins.split(',').map(o => o.trim()).filter(Boolean)
+    : [];
+  
+  // Ajouter les origines par défaut pour le développement et le dashboard
+  const defaultOrigins = [
+    'http://localhost:3102', // Dashboard Quantix
+    'http://localhost:3000', // Frontend principal
+    'http://127.0.0.1:3102',
+    'http://127.0.0.1:3000',
+  ];
+  const allAllowedOrigins = [...new Set([...defaultOrigins, ...corsOrigins])];
+
   app.enableCors({
-    origin: configService.get('CORS_ORIGINS', '*').split(','),
+    origin: (origin, callback) => {
+      // Autoriser les requêtes sans origin (ex: Postman, curl, appels internes)
+      if (!origin) {
+        return callback(null, true);
+      }
+      // Vérifier si l'origine est dans la liste autorisée
+      if (allAllowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      // Rejeter les origines non autorisées
+      logger.warn(`CORS: Origine rejetée: ${origin}`);
+      return callback(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-internal-key',
+      'x-request-id',
+      'conversation-id',
+      'tenant-id',
+      'user-id',
+      'accept-language',
+    ],
+    exposedHeaders: ['x-request-id'],
+    maxAge: 86400, // Cache preflight pendant 24h
   });
 
   // Configuration des pipes de validation

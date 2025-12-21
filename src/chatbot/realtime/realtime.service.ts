@@ -6,13 +6,14 @@
 import { Injectable, Logger, BadRequestException, Optional, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
-import { defaultProfile, getRealtimeInstructionsForLang } from '../../ai/modelProfile';
+import { defaultProfile } from '../../ai/modelProfile';
 import { executeTool as executeToolFromRegistry } from '../../ai/toolRegistry';
 import OpenAI from 'openai';
 import { AssistantsService } from '../../ai/services/assistants.service';
 import { ensureIdentifier, ensureOptionalIdentifier } from '../../common/utils/identifiers';
 import { ExecuteToolDto } from './dto/realtime.dto';
 import { UsageService } from '../../consumption/usage.service';
+import { InstructionsService } from '../../ai/services/instructions.service';
 
 interface CreateTokenRequest {
     userId: string;
@@ -32,25 +33,79 @@ interface EphemeralTokenResponse {
     assistant_thread_id?: string;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// SÉCURITÉ: Configuration des permissions et rate limits par tool
+// ══════════════════════════════════════════════════════════════════════════════
+interface ToolPermission {
+    public: boolean;           // Accessible sans authentification
+    requiresAuth: boolean;     // Nécessite un userId valide
+    maxCallsPerMinute: number; // Rate limit par utilisateur
+    allowedRoles?: string[];   // Rôles autorisés (si vide = tous les rôles authentifiés)
+}
+
+const TOOL_PERMISSIONS: Record<string, ToolPermission> = {
+    // Tools publics (lecture seule)
+    'list_available_properties': { public: true, requiresAuth: false, maxCallsPerMinute: 30 },
+    'get_property_details': { public: true, requiresAuth: false, maxCallsPerMinute: 30 },
+    'get_market_stats': { public: true, requiresAuth: false, maxCallsPerMinute: 20 },
+    
+    // Tools nécessitant authentification
+    'calculate_investment': { public: false, requiresAuth: true, maxCallsPerMinute: 10 },
+    'web_search': { public: false, requiresAuth: true, maxCallsPerMinute: 10 },
+    'web_open': { public: false, requiresAuth: true, maxCallsPerMinute: 5 },
+    
+    // Tools admin/agent uniquement
+    'create_automation': { public: false, requiresAuth: true, maxCallsPerMinute: 5, allowedRoles: ['ADMIN', 'AGENT'] },
+    'analyze_client': { public: false, requiresAuth: true, maxCallsPerMinute: 10, allowedRoles: ['ADMIN', 'AGENT'] },
+    'log_to_crm': { public: false, requiresAuth: true, maxCallsPerMinute: 20, allowedRoles: ['ADMIN', 'AGENT'] },
+};
+
+// Rate limit tracker (en mémoire - utiliser Redis en production)
+interface RateLimitEntry {
+    count: number;
+    resetAt: number;
+}
+
 @Injectable()
 export class RealtimeService {
     private readonly logger = new Logger(RealtimeService.name);
-    private revokedTokens = new Set<string>(); // In-memory pour POC, utilise Redis en prod
+    private revokedTokens = new Set<string>();
     private sessionCounter = 0;
-    private readonly allowedTools = new Set([
-        // Legacy tools
-        'create_automation', 'analyze_client', 'log_to_crm',
-        // Reccos tools
-        'list_available_properties', 'get_property_details', 'calculate_investment', 'get_market_stats',
-        // Web tools
-        'web_search', 'web_open'
-    ]);
+    
+    // ══════════════════════════════════════════════════════════════════════════════
+    // SÉCURITÉ: Rate limiting en mémoire (utiliser Redis en production)
+    // ══════════════════════════════════════════════════════════════════════════════
+    private readonly toolRateLimits = new Map<string, RateLimitEntry>();
+    private readonly tokenRateLimits = new Map<string, RateLimitEntry>();
+    
+    private readonly allowedTools = new Set(Object.keys(TOOL_PERMISSIONS));
 
     constructor(
         private readonly configService: ConfigService,
         private readonly usageService: UsageService,
+        private readonly instructionsService: InstructionsService,
         @Optional() @Inject(AssistantsService) private readonly assistantsService?: AssistantsService
-    ) {}
+    ) {
+        // Nettoyer les rate limits expirés toutes les minutes
+        setInterval(() => this.cleanupRateLimits(), 60000);
+    }
+    
+    /**
+     * Nettoyer les entrées de rate limit expirées
+     */
+    private cleanupRateLimits(): void {
+        const now = Date.now();
+        for (const [key, entry] of this.toolRateLimits) {
+            if (entry.resetAt < now) {
+                this.toolRateLimits.delete(key);
+            }
+        }
+        for (const [key, entry] of this.tokenRateLimits) {
+            if (entry.resetAt < now) {
+                this.tokenRateLimits.delete(key);
+            }
+        }
+    }
 
     /**
      * Créer un token éphémère pour WebRTC via OpenAI (clé ek_)
@@ -90,7 +145,7 @@ export class RealtimeService {
         // On utilise uniquement les instructions realtime multilingues
         // Le modèle OpenAI Realtime détecte automatiquement la langue de l'utilisateur
         // ═══════════════════════════════════════════════════════════════════════════
-        const realtimeInstructions = getRealtimeInstructionsForLang();
+        const realtimeInstructions = this.instructionsService.getInstructions(undefined, 'realtime').instructions;
         
         this.logger.log(`✅ [REALTIME] Instructions multilingues générées (${realtimeInstructions.length} chars) - détection automatique par le modèle`);
         
@@ -233,7 +288,7 @@ export class RealtimeService {
         // On génère des instructions realtime multilingues
         // Le modèle détecte automatiquement la langue de l'utilisateur
         // ═══════════════════════════════════════════════════════════════════════════
-        const realtimeInstructions = getRealtimeInstructionsForLang();
+        const realtimeInstructions = this.instructionsService.getInstructions(undefined, 'realtime').instructions;
         
         // Récupérer les tools depuis l'assistant configuré (si disponible)
         let tools = defaultProfile.tools.map(t => ({
@@ -395,19 +450,103 @@ export class RealtimeService {
         return `ek_${encoded}.${signature}`;
     }
 
-    private checkRateLimit(key: string) {
-        // Implémentation basique (à remplacer par Redis/throttler)
-        // Pour POC: pas de rate-limit stricts
+    /**
+     * SÉCURITÉ: Vérification du rate limit pour création de tokens
+     */
+    private checkRateLimit(key: string): void {
+        const now = Date.now();
+        const windowMs = 60000; // 1 minute
+        const maxTokensPerMinute = 5; // Max 5 tokens par minute par clé
+        
+        const entry = this.tokenRateLimits.get(key);
+        
+        if (!entry || entry.resetAt < now) {
+            // Nouvelle fenêtre
+            this.tokenRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+            return;
+        }
+        
+        if (entry.count >= maxTokensPerMinute) {
+            this.logger.warn(`🚫 [RATE LIMIT] Token creation blocked for key: ${key.substring(0, 20)}...`);
+            throw new BadRequestException('Trop de demandes de token. Veuillez patienter.');
+        }
+        
+        entry.count++;
     }
 
+    /**
+     * SÉCURITÉ: Vérification des permissions pour exécuter un tool
+     * Vérifie si l'utilisateur a le droit d'exécuter ce tool
+     */
     private async checkToolPermission(toolName: string, userId: string): Promise<boolean> {
-        // TODO: Implémenter la logique de permissions
-        // Vérifier si le user/tenant a accès à ce tool
+        const permission = TOOL_PERMISSIONS[toolName];
+        
+        if (!permission) {
+            this.logger.warn(`🚫 [PERMISSION] Tool inconnu: ${toolName}`);
+            return false;
+        }
+        
+        // Tool public - toujours autorisé
+        if (permission.public && !permission.requiresAuth) {
+            return true;
+        }
+        
+        // Tool nécessitant authentification
+        if (permission.requiresAuth) {
+            // Vérifier que userId est valide (pas anonymous, pas vide)
+            if (!userId || userId === 'anonymous' || userId.trim() === '') {
+                this.logger.warn(`🚫 [PERMISSION] Tool ${toolName} nécessite authentification, userId invalide: ${userId}`);
+                return false;
+            }
+            
+            // Si des rôles spécifiques sont requis, on devrait vérifier via le backend
+            // Pour l'instant, on fait confiance au userId validé par le guard interne
+            if (permission.allowedRoles && permission.allowedRoles.length > 0) {
+                // TODO: Appeler le backend pour vérifier le rôle de l'utilisateur
+                // Pour l'instant, on log un avertissement
+                this.logger.debug(`[PERMISSION] Tool ${toolName} nécessite un des rôles: ${permission.allowedRoles.join(', ')}`);
+                // En production, implémenter la vérification via:
+                // const userRole = await this.backendClient.getUserRole(userId);
+                // return permission.allowedRoles.includes(userRole);
+            }
+        }
+        
         return true;
     }
 
-    private checkToolRateLimit(toolName: string, userId: string) {
-        // TODO: Implémenter rate-limit par tool
+    /**
+     * SÉCURITÉ: Vérification du rate limit par tool et utilisateur
+     * Empêche l'abus des tools par un utilisateur
+     */
+    private checkToolRateLimit(toolName: string, userId: string): void {
+        const permission = TOOL_PERMISSIONS[toolName];
+        if (!permission) {
+            throw new BadRequestException(`Tool ${toolName} non configuré`);
+        }
+        
+        const now = Date.now();
+        const windowMs = 60000; // 1 minute
+        const maxCalls = permission.maxCallsPerMinute;
+        const key = `${toolName}:${userId}`;
+        
+        const entry = this.toolRateLimits.get(key);
+        
+        if (!entry || entry.resetAt < now) {
+            // Nouvelle fenêtre
+            this.toolRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+            return;
+        }
+        
+        if (entry.count >= maxCalls) {
+            const secondsLeft = Math.ceil((entry.resetAt - now) / 1000);
+            this.logger.warn(`🚫 [RATE LIMIT] Tool ${toolName} blocked for user ${userId}. Reset in ${secondsLeft}s`);
+            throw new BadRequestException(
+                `Limite atteinte pour ${toolName}. Réessayez dans ${secondsLeft} secondes.`
+            );
+        }
+        
+        entry.count++;
+        this.logger.debug(`[RATE LIMIT] Tool ${toolName} call ${entry.count}/${maxCalls} for user ${userId}`);
     }
 }
 

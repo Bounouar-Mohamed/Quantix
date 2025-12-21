@@ -1,7 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsArray, IsString, IsOptional, IsNumber, IsEnum, Min, Max } from 'class-validator';
 import type { AiMessage } from '../interfaces/ai.interface';
-import { AiProvider } from '../interfaces/ai.interface';
 
 export class AiMessageDto {
   @ApiProperty({
@@ -30,7 +29,7 @@ export class GenerateResponseDto {
 
   @ApiProperty({
     description: 'Modèle IA à utiliser',
-    example: 'gpt-3.5-turbo',
+    example: 'gpt-4o-mini',
     required: false,
   })
   @IsOptional()
@@ -52,26 +51,16 @@ export class GenerateResponseDto {
 
   @ApiProperty({
     description: 'Nombre maximum de tokens',
-    example: 1000,
+    example: 2000,
     minimum: 1,
-    maximum: 4000,
+    maximum: 16000,
     required: false,
   })
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(4000)
+  @Max(16000)
   maxTokens?: number;
-
-  @ApiProperty({
-    description: 'Provider IA à utiliser',
-    enum: ['openai', 'anthropic'],
-    example: 'openai',
-    required: false,
-  })
-  @IsOptional()
-  @IsEnum(['openai', 'anthropic'])
-  provider?: AiProvider;
 
   @ApiProperty({
     description: 'ID de l\'utilisateur',
@@ -116,12 +105,6 @@ export class HealthCheckDto {
     example: true,
   })
   openai: boolean;
-
-  @ApiProperty({
-    description: 'État du service Anthropic',
-    example: false,
-  })
-  anthropic: boolean;
 
   @ApiProperty({
     description: 'État global des services IA',

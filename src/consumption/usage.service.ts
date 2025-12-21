@@ -99,14 +99,6 @@ export class UsageService {
   private enforceQuota(userId: string, channel: Channel, tokensUsed: number): void {
     const today = new Date().toISOString().slice(0, 10);
     const key = `${channel}:${userId}`;
-    const quota =
-      channel === 'chat'
-        ? this.quotas.chat
-        : this.quotas.realtime;
-
-    if (!quota) {
-      return;
-    }
 
     const counter = this.dailyCounters.get(key);
     if (!counter || counter.date !== today) {
@@ -117,18 +109,29 @@ export class UsageService {
     current.requests += 1;
     current.tokens += tokensUsed;
 
-    if (quota.maxRequests && current.requests > quota.maxRequests) {
-      this.logger.warn(
-        `Quota requêtes dépassé pour ${userId} (${channel}): ${current.requests}/${quota.maxRequests}`,
-      );
-      throw new HttpException('Quota quotidien de requêtes dépassé', HttpStatus.TOO_MANY_REQUESTS);
-    }
-
-    if (channel === 'chat' && quota.maxTokens && current.tokens > quota.maxTokens) {
-      this.logger.warn(
-        `Quota tokens dépassé pour ${userId}: ${current.tokens}/${quota.maxTokens}`,
-      );
-      throw new HttpException('Quota quotidien de tokens dépassé', HttpStatus.TOO_MANY_REQUESTS);
+    // Vérifier quota selon le channel
+    if (channel === 'chat') {
+      const quota = this.quotas.chat;
+      if (quota.maxRequests && current.requests > quota.maxRequests) {
+        this.logger.warn(
+          `Quota requêtes dépassé pour ${userId} (chat): ${current.requests}/${quota.maxRequests}`,
+        );
+        throw new HttpException('Quota quotidien de requêtes dépassé', HttpStatus.TOO_MANY_REQUESTS);
+      }
+      if (quota.maxTokens && current.tokens > quota.maxTokens) {
+        this.logger.warn(
+          `Quota tokens dépassé pour ${userId}: ${current.tokens}/${quota.maxTokens}`,
+        );
+        throw new HttpException('Quota quotidien de tokens dépassé', HttpStatus.TOO_MANY_REQUESTS);
+      }
+    } else {
+      const quota = this.quotas.realtime;
+      if (quota.maxRequests && current.requests > quota.maxRequests) {
+        this.logger.warn(
+          `Quota requêtes dépassé pour ${userId} (realtime): ${current.requests}/${quota.maxRequests}`,
+        );
+        throw new HttpException('Quota quotidien de requêtes dépassé', HttpStatus.TOO_MANY_REQUESTS);
+      }
     }
   }
 }

@@ -1,5 +1,27 @@
 import { prisma, computeCost } from '../db/prisma';
 
+/**
+ * Résout l'ID réel d'un tenant à partir de son slug ou ID
+ * @param tenantIdOrSlug - L'ID ou le slug du tenant (ex: "reccos")
+ * @returns L'ID réel du tenant dans la base de données, ou le slug si non trouvé
+ */
+async function resolveTenantId(tenantIdOrSlug?: string): Promise<string | undefined> {
+  if (!tenantIdOrSlug) return undefined;
+  
+  // Chercher d'abord par slug (cas le plus courant)
+  const tenant = await prisma.tenant.findFirst({
+    where: {
+      OR: [
+        { slug: tenantIdOrSlug },
+        { id: tenantIdOrSlug },
+      ],
+    },
+    select: { id: true },
+  });
+  
+  return tenant?.id || tenantIdOrSlug;
+}
+
 export async function logUserUsage(params: {
   userId: string;
   tenantId?: string;
@@ -8,9 +30,12 @@ export async function logUserUsage(params: {
   promptTokens: number;
   completionTokens: number;
 }) {
-  const { userId, tenantId, channel, model, promptTokens, completionTokens } = params;
+  const { userId, channel, model, promptTokens, completionTokens } = params;
   const totalTokens = (promptTokens || 0) + (completionTokens || 0);
   const cost = computeCost(model, promptTokens || 0, completionTokens || 0);
+  
+  // Résoudre l'ID réel du tenant (convertir slug → ID si nécessaire)
+  const resolvedTenantId = await resolveTenantId(params.tenantId);
 
   await prisma.userUsage.upsert({
     where: { id: `${userId}-${channel}` },
@@ -21,11 +46,13 @@ export async function logUserUsage(params: {
       tokensOut: { increment: completionTokens || 0 },
       totalTokens: { increment: totalTokens },
       totalCost: { increment: cost },
+      // IMPORTANT: Mettre à jour le tenantId s'il a changé ou n'était pas défini
+      tenantId: resolvedTenantId,
     },
     create: {
       id: `${userId}-${channel}`,
       userId,
-      tenantId,
+      tenantId: resolvedTenantId,
       channel,
       requests: 1,
       tokensIn: promptTokens || 0,

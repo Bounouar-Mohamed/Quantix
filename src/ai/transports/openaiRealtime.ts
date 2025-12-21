@@ -3,7 +3,7 @@
  * Transforme le profil de modèle en configuration de session WebSocket
  */
 
-import { ModelProfile, getRealtimeInstructionsForLang } from "../modelProfile";
+import { ModelProfile } from "../modelProfile";
 
 export interface RealtimeSessionConfig {
     type: "session.update";
@@ -21,6 +21,14 @@ export interface RealtimeSessionConfig {
             description: string;
             parameters: any;
         }>;
+        // ═══════════════════════════════════════════════════════════════════════════
+        // tool_choice: contrôle quand le modèle appelle les functions
+        // - "auto": le modèle décide (recommandé pour conversations naturelles)
+        // - "required": force l'appel d'un tool (si applicable)
+        // - "none": désactive les tools
+        // - { type: "function", function: { name: "..." } }: force un tool spécifique
+        // ═══════════════════════════════════════════════════════════════════════════
+        tool_choice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } };
         turn_detection: {
             type: "server_vad";
             threshold: number;
@@ -50,7 +58,7 @@ export function buildRealtimeSessionUpdate(
     // ═══════════════════════════════════════════════════════════════════════════
     // REALTIME: Instructions multilingues - détection automatique par le modèle
     // ═══════════════════════════════════════════════════════════════════════════
-    const realtimeInstructions = getRealtimeInstructionsForLang();
+    const realtimeInstructions = profile.realtimeInstructions || profile.instructions;
     
     return {
         type: "session.update",
@@ -68,12 +76,17 @@ export function buildRealtimeSessionUpdate(
                 description: t.description,
                 parameters: t.parameters
             })),
+            // ═══════════════════════════════════════════════════════════════════════════
+            // CRITICAL: tool_choice = "auto" permet au modèle d'appeler les tools
+            // Selon la doc OpenAI: https://platform.openai.com/docs/guides/realtime-model-capabilities
+            // ═══════════════════════════════════════════════════════════════════════════
+            tool_choice: "auto",
             turn_detection: {
                 type: "server_vad",
                 threshold: 0.5,
                 prefix_padding_ms: 250,
                 silence_duration_ms: 500,
-                create_response: false,
+                create_response: true, // ✅ IMPORTANT: créer automatiquement une réponse après VAD
                 interrupt_response: true
             },
             input_audio_transcription: {
